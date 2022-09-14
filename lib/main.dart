@@ -138,64 +138,38 @@ class _MyHomePageState extends State<MyHomePage> {
     if (_image != null) {
       dynamic sendData = _image?.path;
 
-      dynamic formData =
-          FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
-
-      Uint8List? temp = await _image?.readAsBytes();
-      print(temp?.length);
-
       if (rssi_rp.isEmpty) rssi_rp = ['total'];
+      dynamic formData = FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
+      for(int i=0; i<_selectedRssiCandidateMaxRP; i++) {
+        String sendRssiRp = rssi_rp[i].toString();
 
-      // var response = await dio.post(
-      //   'http://117.17.157.104:15261/visual_map_predict/$_selectedImageSearchAlgo',
-      //   queryParameters: {'rp': rssi_rp[0]},
-      //   data: formData,
-      //   options: Options(
-      //     headers: {
-      //       'Content-Type': 'application/json; charset=UTF-8',
-      //     },
-      //   ),
-      // );
-      var uploadImage = await dio.post(
-        'http://117.17.157.101:58961/upload',
-        data: formData,
-        options: Options(
-          headers: {
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-        ),
-      );
+        var image_search_api = await dio.post(
+          "http://117.17.157.101:58961/regionPoint?Building=${int.parse(sendRssiRp[0])}&Floor=${int.parse(sendRssiRp[1])}&RP=${sendRssiRp.substring(2)}&Method=$_selectedImageSearchAlgo",
+          data: formData,
+          options: Options(
+            headers: {
+              'Content-Type': 'application/json; charset=UTF-8',
+            },
+          ),
+        );
 
-      if(uploadImage.statusCode == 200) {
-        for(int i=0; i<_selectedRssiCandidateMaxRP; i++) {
-          String sendRssiRp = rssi_rp[i].toString();
-          var image_search_api = await dio.post(
-            "http://117.17.157.101:58961/candidatePoint",
-            data: jsonEncode({"Building": int.parse(sendRssiRp[0]),"Floor": int.parse(sendRssiRp[1]),"RP":sendRssiRp.substring(2), "a":_selectedImageSearchAlgo}),
-            options: Options(
-              headers: {
-                'Content-Type': 'application/json; charset=UTF-8',
-              },
-            ),
-          );
-
-          if (image_search_api.statusCode == 200) {
-            try {
-              setState(() {
-                _searchImage = base64Decode(image_search_api.data['img'].toString());
-                dist = image_search_api.data['dist'].toString();
-                visual_rp = image_search_api.data['rp'].toString();
-                _searchTime = image_search_api.data['searchTime'];
-              });
-            } catch (e) {
-              print(e);
-            }
+        if (image_search_api.statusCode == 200) {
+          try {
+            setState(() {
+              _searchImage = base64Decode(image_search_api.data['img'].toString());
+              dist = image_search_api.data['dist'].toString();
+              visual_rp = image_search_api.data['rp'].toString();
+              _searchTime = image_search_api.data['searchTime'];
+            });
+          } catch (e) {
+            print(e);
           }
         }
-
+      }
+      dynamic formData2 = FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
         var all_search = await dio.post(
-          "http://117.17.157.101:58961/candidatePoint",
-          data: jsonEncode({"Building": 0,"Floor": 0,"RP": ",", "a":_selectedImageSearchAlgo}),
+          "http://117.17.157.101:58961/regionPoint?Building=0&Floor=0&RP=&Method=$_selectedImageSearchAlgo",
+          data: formData2,
           options: Options(
             headers: {
               'Content-Type': 'application/json; charset=UTF-8',
@@ -212,7 +186,6 @@ class _MyHomePageState extends State<MyHomePage> {
             print(e);
           }
         }
-      }
     } else {
       debugPrint('이미지를 업로드 해주세요');
     }
