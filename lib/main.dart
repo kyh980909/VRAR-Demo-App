@@ -1,12 +1,13 @@
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui';
+import 'package:demo/selectImage.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:wifi_hunter/wifi_hunter.dart';
@@ -46,21 +47,27 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   PickedFile? _image;
   Uint8List? _searchImage;
+  double _searchTime = 0.0;
+  double _allSearchTime = 0.0;
   WiFiHunterResult wiFiHunterResult = WiFiHunterResult();
   final List<String> _imageSearchAlgoList = [
-    'feature_extract',
-    'feature_match'
+    'euclidean',
+    'manhattan'
   ];
-  String _selectedImageSearchAlgo = 'feature_extract';
+  String _selectedImageSearchAlgo = 'euclidean';
 
   final List<int> _rssiCandidateMaxRPList = [1, 2, 3, 4, 5];
   int _selectedRssiCandidateMaxRP = 1;
 
-  Map<String, int> rssi = {};
+  Map<String, dynamic> rssi = {};
   List<dynamic> rssi_rp = [];
   List<dynamic> rssi_rp_prob = [];
   String visual_rp = "";
   String dist = "";
+
+  double performanceCalculator(searchTime, allSearchTime) {
+    return (allSearchTime - searchTime) / searchTime;
+  }
 
   Future<void> permissionRequest() async {
     if (await Permission.camera.request().isGranted) {
@@ -84,6 +91,14 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<File> getImageFileFromAssets(String path) async {
+    final byteData = await rootBundle.load('test_data/$path');
+
+    final file = File('${(await getTemporaryDirectory()).path}/$path');
+    await file.writeAsBytes(byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+    return file;
+  }
+
   Future captureImage() async {
     try {
       final image = await ImagePicker()
@@ -99,34 +114,50 @@ class _MyHomePageState extends State<MyHomePage> {
       debugPrint("Failed to pick image: $e");
     }
   }
-
-  Future pickImage() async {
-    try {
-      final image = await ImagePicker()
-          .pickImage(source: ImageSource.gallery, imageQuality: 30);
-
-      if (image == null) return;
-      final imageTemp = PickedFile(image.path);
-
-      setState(() {
-        _image = imageTemp;
-      });
-    } on PlatformException catch (e) {
-      debugPrint("Failed to pick image: $e");
-    }
-  }
+  //
+  // Future pickImage() async {
+  //   try {
+  //     final image = await ImagePicker()
+  //         .pickImage(source: ImageSource.gallery, imageQuality: 30);
+  //
+  //     if (image == null) return;
+  //     final imageTemp = PickedFile(image.path);
+  //     print(image.path);
+  //
+  //     setState(() {
+  //       _image = imageTemp;
+  //     });
+  //   } on PlatformException catch (e) {
+  //     debugPrint("Failed to pick image: $e");
+  //   }
+  // }
 
   Future sendImage() async {
     Dio dio = Dio();
+
     if (_image != null) {
       dynamic sendData = _image?.path;
 
       dynamic formData =
           FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
 
-      var response = await dio.post(
-        'http://117.17.157.104:15261/visual_map_predict/$_selectedImageSearchAlgo',
-        queryParameters: {'rp': rssi_rp},
+      Uint8List? temp = await _image?.readAsBytes();
+      print(temp?.length);
+
+      if (rssi_rp.isEmpty) rssi_rp = ['total'];
+
+      // var response = await dio.post(
+      //   'http://117.17.157.104:15261/visual_map_predict/$_selectedImageSearchAlgo',
+      //   queryParameters: {'rp': rssi_rp[0]},
+      //   data: formData,
+      //   options: Options(
+      //     headers: {
+      //       'Content-Type': 'application/json; charset=UTF-8',
+      //     },
+      //   ),
+      // );
+      var uploadImage = await dio.post(
+        'http://117.17.157.101:58961/upload',
         data: formData,
         options: Options(
           headers: {
@@ -134,15 +165,52 @@ class _MyHomePageState extends State<MyHomePage> {
           },
         ),
       );
-      if (response.statusCode == 200) {
-        try {
-          setState(() {
-            _searchImage = base64Decode(response.data['img'].toString());
-            dist = response.data['dist'].toString();
-            visual_rp = response.data['rp'].toString();
-          });
-        } catch (e) {
-          print(e);
+
+      if(uploadImage.statusCode == 200) {
+        for(int i=0; i<_selectedRssiCandidateMaxRP; i++) {
+          String sendRssiRp = rssi_rp[i].toString();
+          var image_search_api = await dio.post(
+            "http://117.17.157.101:58961/candidatePoint",
+            data: jsonEncode({"Building": int.parse(sendRssiRp[0]),"Floor": int.parse(sendRssiRp[1]),"RP":sendRssiRp.substring(2), "a":_selectedImageSearchAlgo}),
+            options: Options(
+              headers: {
+                'Content-Type': 'application/json; charset=UTF-8',
+              },
+            ),
+          );
+
+          if (image_search_api.statusCode == 200) {
+            try {
+              setState(() {
+                _searchImage = base64Decode(image_search_api.data['img'].toString());
+                dist = image_search_api.data['dist'].toString();
+                visual_rp = image_search_api.data['rp'].toString();
+                _searchTime = image_search_api.data['searchTime'];
+              });
+            } catch (e) {
+              print(e);
+            }
+          }
+        }
+
+        var all_search = await dio.post(
+          "http://117.17.157.101:58961/candidatePoint",
+          data: jsonEncode({"Building": 0,"Floor": 0,"RP": ",", "a":_selectedImageSearchAlgo}),
+          options: Options(
+            headers: {
+              'Content-Type': 'application/json; charset=UTF-8',
+            },
+          ),
+        );
+
+        if (all_search.statusCode == 200) {
+          try {
+            setState(() {
+              _allSearchTime = all_search.data['searchTime'];
+            });
+          } catch (e) {
+            print(e);
+          }
         }
       }
     } else {
@@ -216,8 +284,26 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ),
                 ElevatedButton(
-                  onPressed: () {
-                    pickImage();
+                  onPressed: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const SelectImage(),
+                      ),
+                    );
+
+                    if (result == '1') {
+                      // File(_image!.path)
+                      final image_path = await getImageFileFromAssets('test_image1.jpg');
+                      final rssi_json = await rootBundle.loadString('test_data/test_rssi1.json');
+                      final data = json.decode(rssi_json);
+
+                      setState(() {
+                        _image = PickedFile(image_path.path);
+                        rssi = data;
+                      });
+                    }
+                    // pickImage();
                   },
                   child: const Text("Select Image"),
                   style: ButtonStyle(
@@ -314,36 +400,19 @@ class _MyHomePageState extends State<MyHomePage> {
             ),
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 10.0),
-              width: double.infinity,
-              height: 80.0,
-              child: Center(
-                child: Text(
-                  'Visual RP : $visual_rp\nL2 distance similarity : $dist',
-                  style: const TextStyle(fontSize: 20.0),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: Colors.blue.shade300, width: 3.0),
-              ),
-            ),
-            const SizedBox(height: 10.0),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10.0),
               child: GestureDetector(
                 child: Center(
-                  child: rssi_rp.isNotEmpty
+                  child: rssi_rp_prob.isNotEmpty
                       ? Text(
-                          'RSSI RP : ${rssi_rp[0]}\nProbability : ${rssi_rp_prob[0].toStringAsFixed(4)}%',
-                          style: const TextStyle(fontSize: 20.0),
-                          textAlign: TextAlign.center,
-                        )
+                    'Image RP : ${rssi_rp[0]}\nProbability : ${rssi_rp_prob[0].toStringAsFixed(4)}%',
+                    style: const TextStyle(fontSize: 20.0),
+                    textAlign: TextAlign.center,
+                  )
                       : const Text(
-                          'RSSI RP :\nProbability : ',
-                          style: TextStyle(fontSize: 20.0),
-                          textAlign: TextAlign.center,
-                        ),
+                    'Image RP :\nProbability : ',
+                    style: TextStyle(fontSize: 20.0),
+                    textAlign: TextAlign.center,
+                  ),
                 ),
                 onTap: () async {
                   await showDialog(
@@ -363,87 +432,50 @@ class _MyHomePageState extends State<MyHomePage> {
               height: 70,
             ),
             const SizedBox(height: 10.0),
-            Row(
-              children: [
-                Expanded(
-                  flex: 4,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 10.0),
-                    child: Column(
-                      children: [
-                        const Text("Maximum Candidate RSSI RP"),
-                        Center(
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton(
-                              isExpanded: true,
-                              value: _selectedRssiCandidateMaxRP,
-                              items: _rssiCandidateMaxRPList.map((value) {
-                                return DropdownMenuItem(
-                                    value: value,
-                                    child:
-                                        Center(child: Text(value.toString())));
-                              }).toList(),
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedRssiCandidateMaxRP =
-                                      int.parse(value.toString());
-                                });
-                              },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      border: Border.all(color: Colors.green, width: 1.0),
-                      borderRadius: BorderRadius.circular(5.0),
-                    ),
-                    height: 70,
-                  ),
-                ),
-                Expanded(
-                  flex: 3,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 10.0),
-                    child: Center(
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton(
-                          isExpanded: true,
-                          value: _selectedImageSearchAlgo,
-                          items: _imageSearchAlgoList.map((value) {
-                            return DropdownMenuItem(
-                                value: value,
-                                child: Center(child: Text(value)));
-                          }).toList(),
-                          onChanged: (value) {
-                            setState(() {
-                              _selectedImageSearchAlgo = value.toString();
-                            });
-                          },
-                        ),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 10.0),
+              child: Column(
+                children: [
+                  const Text("Maximum Candidate RSSI RP"),
+                  Center(
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton(
+                        isExpanded: true,
+                        value: _selectedRssiCandidateMaxRP,
+                        items: _rssiCandidateMaxRPList.map((value) {
+                          return DropdownMenuItem(
+                              value: value,
+                              child:
+                              Center(child: Text(value.toString())));
+                        }).toList(),
+                        onChanged: (value) {
+                          setState(() {
+                            _selectedRssiCandidateMaxRP =
+                                int.parse(value.toString());
+                          });
+                        },
                       ),
                     ),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      border: Border.all(color: Colors.green, width: 1.0),
-                      borderRadius: BorderRadius.circular(5.0),
-                    ),
-                    height: 70,
                   ),
-                ),
-              ],
+                ],
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.green, width: 1.0),
+                borderRadius: BorderRadius.circular(5.0),
+              ),
+              height: 70,
             ),
             Container(
               margin:
-                  const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
+              const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
               width: double.infinity,
               height: 60.0,
               child: ElevatedButton(
                 onPressed: () {
                   sendRssi();
                 },
-                child: const Text("Fi-Vi 1st Search(RSSI Search)"),
+                child: const Text("1st location estimate(RSSI Search)"),
                 style: ButtonStyle(
                   backgroundColor: MaterialStateProperty.all(Colors.green),
                   padding: MaterialStateProperty.all(
@@ -451,6 +483,50 @@ class _MyHomePageState extends State<MyHomePage> {
                   ),
                 ),
               ),
+            ),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 10.0),
+              width: double.infinity,
+              height: 120.0,
+              child: Center(
+                child: Text(
+                  'Distance similarity : $dist\nSearch Time : ${_searchTime.toStringAsFixed(4)}s\nAll Search Time: ${_allSearchTime.toStringAsFixed(4)}s\n개선율 : ${_searchTime == 0 && _allSearchTime == 0 ? 0: performanceCalculator(_searchTime, _allSearchTime)}%',
+                  style: const TextStyle(fontSize: 20.0),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.blue.shade300, width: 3.0),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 10.0),
+              child: Center(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton(
+                    isExpanded: true,
+                    value: _selectedImageSearchAlgo,
+                    items: _imageSearchAlgoList.map((value) {
+                      return DropdownMenuItem(
+                          value: value,
+                          child: Center(child: Text(value)));
+                    }).toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedImageSearchAlgo = value.toString();
+                      });
+                    },
+                  ),
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: Colors.green, width: 1.0),
+                borderRadius: BorderRadius.circular(5.0),
+              ),
+              height: 30,
             ),
             Container(
               margin:
@@ -461,7 +537,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 onPressed: () {
                   sendImage();
                 },
-                child: const Text("Fi-Vi 2nd Search(Visual Search)"),
+                child: const Text("2nd location estimate(Image Search)"),
                 style: ButtonStyle(
                   backgroundColor: MaterialStateProperty.all(Colors.green),
                   padding: MaterialStateProperty.all(
@@ -527,7 +603,7 @@ class _ImageDialogState extends State<ImageDialog> {
     return Container(
       child: PhotoView(
         imageProvider: AssetImage('images/visual_rp_${widget.visual_rp}.png'),
-        backgroundDecoration: BoxDecoration(color: Colors.white),
+        backgroundDecoration: const BoxDecoration(color: Colors.white),
       ),
     );
   }
