@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:demo/selectImage.dart';
+import 'package:demo/selectResultImage.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -46,27 +47,37 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   PickedFile? _image;
-  Uint8List? _searchImage;
+  Uint8List? _FiViSearchImage;
+  Uint8List? _AllSearchImage;
   double _searchTime = 0.0;
   double _allSearchTime = 0.0;
+  int _filteredImageLength = 0;
   WiFiHunterResult wiFiHunterResult = WiFiHunterResult();
-  final List<String> _imageSearchAlgoList = [
-    'euclidean',
-    'manhattan'
-  ];
+  final List<String> _imageSearchAlgoList = ['euclidean', 'manhattan'];
   String _selectedImageSearchAlgo = 'euclidean';
 
   final List<int> _rssiCandidateMaxRPList = [1, 2, 3, 4, 5];
   int _selectedRssiCandidateMaxRP = 1;
 
+  final List<String> _rssiModelList = ["Floor", "Space", "Case1", "Case2", "Case3"];
+  String _selectedRssiModel = "Case1";
+
   Map<String, dynamic> rssi = {};
+  String region = "";
   List<dynamic> rssi_rp = [];
   List<dynamic> rssi_rp_prob = [];
+  String building = "";
+  String floor = "";
   String visual_rp = "";
   String dist = "";
+  String _allSearchDist = "";
+
+  List<Map<String, dynamic>> resultDataList = [];
+
+  final totalImageLength = 12390;
 
   double performanceCalculator(searchTime, allSearchTime) {
-    return (allSearchTime - searchTime) / searchTime;
+    return (allSearchTime - searchTime) * 100 / searchTime;
   }
 
   Future<void> permissionRequest() async {
@@ -95,7 +106,8 @@ class _MyHomePageState extends State<MyHomePage> {
     final byteData = await rootBundle.load('test_data/$path');
 
     final file = File('${(await getTemporaryDirectory()).path}/$path');
-    await file.writeAsBytes(byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+    await file.writeAsBytes(byteData.buffer
+        .asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
     return file;
   }
 
@@ -114,37 +126,22 @@ class _MyHomePageState extends State<MyHomePage> {
       debugPrint("Failed to pick image: $e");
     }
   }
-  //
-  // Future pickImage() async {
-  //   try {
-  //     final image = await ImagePicker()
-  //         .pickImage(source: ImageSource.gallery, imageQuality: 30);
-  //
-  //     if (image == null) return;
-  //     final imageTemp = PickedFile(image.path);
-  //     print(image.path);
-  //
-  //     setState(() {
-  //       _image = imageTemp;
-  //     });
-  //   } on PlatformException catch (e) {
-  //     debugPrint("Failed to pick image: $e");
-  //   }
-  // }
 
   Future sendImage() async {
     Dio dio = Dio();
-
+    resultDataList.clear();
     if (_image != null) {
       dynamic sendData = _image?.path;
 
       if (rssi_rp.isEmpty) rssi_rp = ['total'];
-      dynamic formData = FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
-      for(int i=0; i<_selectedRssiCandidateMaxRP; i++) {
-        String sendRssiRp = rssi_rp[i].toString();
+
+      for (int i = 0; i < _selectedRssiCandidateMaxRP; i++) {
+        dynamic formData = FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
+        Map<String, dynamic> _resultData = {};
+        String sendRssiRp = rssi_rp.toString();
 
         var image_search_api = await dio.post(
-          "http://117.17.157.101:58961/regionPoint?Building=${int.parse(sendRssiRp[0])}&Floor=${int.parse(sendRssiRp[1])}&RP=${sendRssiRp.substring(2)}&Method=$_selectedImageSearchAlgo",
+          "http://117.17.157.101:58961/regionPoint?Building=$building&Floor=$floor&RP=${sendRssiRp.substring(1,sendRssiRp.length-1)}&Method=$_selectedImageSearchAlgo",
           data: formData,
           options: Options(
             headers: {
@@ -155,37 +152,51 @@ class _MyHomePageState extends State<MyHomePage> {
 
         if (image_search_api.statusCode == 200) {
           try {
-            setState(() {
-              _searchImage = base64Decode(image_search_api.data['img'].toString());
-              dist = image_search_api.data['dist'].toString();
-              visual_rp = image_search_api.data['rp'].toString();
-              _searchTime = image_search_api.data['searchTime'];
-            });
+            _FiViSearchImage =
+                base64Decode(image_search_api.data['img'].toString());
+            dist = image_search_api.data['dist'].toString();
+            visual_rp = image_search_api.data['rp'].toString();
+            _searchTime = image_search_api.data['searchTime'];
+            _filteredImageLength = image_search_api.data['length'];
+            if(i == 0) {
+              setState(() {});
+            }
+            _resultData['image'] = _FiViSearchImage;
+            _resultData['dist'] = dist;
+            _resultData['visual_rp'] = visual_rp;
+            _resultData['search_time'] = _searchTime;
+            _resultData['filtered_image_length'] = _filteredImageLength;
+
+            resultDataList.add(_resultData);
           } catch (e) {
             print(e);
           }
         }
       }
-      dynamic formData2 = FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
-        var all_search = await dio.post(
-          "http://117.17.157.101:58961/regionPoint?Building=0&Floor=0&RP=&Method=$_selectedImageSearchAlgo",
-          data: formData2,
-          options: Options(
-            headers: {
-              'Content-Type': 'application/json; charset=UTF-8',
-            },
-          ),
-        );
 
-        if (all_search.statusCode == 200) {
-          try {
-            setState(() {
-              _allSearchTime = all_search.data['searchTime'];
-            });
-          } catch (e) {
-            print(e);
-          }
+      dynamic formData2 =
+          FormData.fromMap({'image': await MultipartFile.fromFile(sendData)});
+      var all_search = await dio.post(
+        "http://117.17.157.101:58961/regionPoint?Building=0&Floor=0&RP=&Method=$_selectedImageSearchAlgo",
+        data: formData2,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+        ),
+      );
+
+      if (all_search.statusCode == 200) {
+        try {
+          setState(() {
+            _AllSearchImage = base64Decode(all_search.data['img'].toString());
+            _allSearchTime = all_search.data['searchTime'];
+            _allSearchDist = all_search.data['dist'];
+          });
+        } catch (e) {
+          print(e);
         }
+      }
     } else {
       debugPrint('이미지를 업로드 해주세요');
     }
@@ -198,7 +209,7 @@ class _MyHomePageState extends State<MyHomePage> {
         Response response = await dio.post(
           'http://117.17.157.104:15261/radio_map_predict',
           data: jsonEncode({'rssi': rssi}),
-          queryParameters: {'max_rp': _selectedRssiCandidateMaxRP},
+          queryParameters: {'max_rp': _selectedRssiCandidateMaxRP, 'selected_model' : _selectedRssiModel},
           options: Options(
             headers: {
               'Content-Type': 'application/json; charset=UTF-8',
@@ -206,9 +217,13 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         );
         if (response.statusCode == 200) {
+          print(response.data);
           setState(() {
+            region = response.data['region'].toString();
             rssi_rp = response.data['rp'];
             rssi_rp_prob = response.data['prob'];
+            building = response.data['building'];
+            floor = response.data['floor'];
           });
           // rssi.clear();
         }
@@ -264,19 +279,26 @@ class _MyHomePageState extends State<MyHomePage> {
                         builder: (context) => const SelectImage(),
                       ),
                     );
+                    final image_path =
+                        await getImageFileFromAssets('test_image$result.jpg');
+                    final rssi_json = await rootBundle
+                        .loadString('test_data/test_rssi$result.json');
+                    final data = json.decode(rssi_json);
 
-                    if (result == '1') {
-                      // File(_image!.path)
-                      final image_path = await getImageFileFromAssets('test_image1.jpg');
-                      final rssi_json = await rootBundle.loadString('test_data/test_rssi1.json');
-                      final data = json.decode(rssi_json);
+                    setState(() {
+                      _image = PickedFile(image_path.path);
+                      rssi = data;
 
-                      setState(() {
-                        _image = PickedFile(image_path.path);
-                        rssi = data;
-                      });
-                    }
-                    // pickImage();
+                      _FiViSearchImage = null;
+                      dist = "";
+                      visual_rp = "";
+                      _searchTime = 0.0;
+                      _filteredImageLength = 0;
+
+                      _AllSearchImage = null;
+                      _allSearchTime = 0.0;
+                      _allSearchDist = "";
+                    });
                   },
                   child: const Text("Select Image"),
                   style: ButtonStyle(
@@ -289,15 +311,20 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
             Container(
+              height: 400,
               margin: const EdgeInsets.all(10.0),
               decoration: BoxDecoration(
-                border: Border.all(color: Colors.green, width: 1.0),
+                border: Border.all(color: Colors.green, width: 2.0),
                 borderRadius: BorderRadius.circular(5.0),
               ),
-              child: Row(
+              child: ListView(
+                scrollDirection: Axis.horizontal,
                 children: [
-                  Expanded(
+                  SizedBox(
+                    width: 200,
+                    height: 400,
                     child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Container(
                           width: double.infinity,
@@ -305,87 +332,174 @@ class _MyHomePageState extends State<MyHomePage> {
                           child: const Center(
                             child: Text(
                               'Query Image',
-                              style: TextStyle(fontSize: 10.0),
+                              style: TextStyle(fontSize: 15.0),
                             ),
                           ),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             border: Border.all(
-                                color: Colors.lightBlueAccent, width: 1.0),
+                                color: Colors.green, width: 1.0),
                           ),
                         ),
-                        Container(
+                        Expanded(
                           child: _image == null
-                              ? const Text('')
-                              : Image.file(File(_image!.path), height: 248),
+                              ? const Center(child: Text("Empty"))
+                              : Image.file(File(_image!.path), height: 370),
                         ),
                       ],
                     ),
                   ),
-                  Expanded(
-                      child: Column(
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        height: 20.0,
-                        child: const Center(
-                          child: Text(
-                            'Search Image',
-                            style: TextStyle(fontSize: 10.0),
+                  SizedBox(
+                    width: 200,
+                    height: 400,
+                    child: Column(
+                      children: [
+                        GestureDetector(
+                          onTap: () async {
+                            final result = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => SelectResultImage(resultDataList: resultDataList),
+                              ),
+                            );
+
+                            if(result != null) {
+                              setState(() {
+                                _FiViSearchImage =
+                                resultDataList[result]['image'];
+                                dist = resultDataList[result]['dist'];
+                                visual_rp = resultDataList[result]['visual_rp'];
+                                _searchTime =
+                                resultDataList[result]['search_time'];
+                                _filteredImageLength =
+                                resultDataList[result]['filtered_image_length'];
+                              });
+                            }
+                          },
+                          child: Container(
+                            width: double.infinity,
+                            height: 20.0,
+                            child: const Center(
+                              child: Text(
+                                'Fi-Vi Search Image',
+                                style: TextStyle(fontSize: 15.0),
+                              ),
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              border: Border.all(
+                                  color: Colors.green, width: 1.0),
+                            ),
                           ),
                         ),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          border: Border.all(
-                              color: Colors.lightBlueAccent, width: 1.0),
-                        ),
-                      ),
-                      Container(
-                        child: _searchImage == null
-                            ? const Text('')
-                            : GestureDetector(
-                                child: Image.memory(_searchImage!, height: 248),
-                                onTap: () async {
-                                  await showDialog(
+                        Expanded(
+                          child: _FiViSearchImage == null
+                              ? const Center(child: Text("Empty"))
+                              : GestureDetector(
+                                  child: Image.memory(_FiViSearchImage!,
+                                      height: 248),
+                                  onTap: () async {
+                                    await showDialog(
+                                        context: context,
+                                        builder: (_) =>
+                                            ImageDialog(visual_rp: visual_rp));
+                                  },
+                                  onDoubleTap: () async {
+                                    await showDialog(
                                       context: context,
-                                      builder: (_) =>
-                                          ImageDialog(visual_rp: visual_rp));
-                                },
-                                onDoubleTap: () async {
-                                  await showDialog(
-                                    context: context,
-                                    builder: (_) => WebView(
-                                      initialUrl:
-                                          "https://my.matterport.com/show/?m=evfzqBJihod&sr=-2.9,-.22&ss=$visual_rp",
-                                      javascriptMode:
-                                          JavascriptMode.unrestricted,
-                                      gestureNavigationEnabled: true,
-                                    ),
-                                  );
-                                },
-                              ),
-                      ),
-                    ],
-                  ))
+                                      builder: (_) => WebView(
+                                        initialUrl:
+                                            "https://my.matterport.com/show/?m=evfzqBJihod&sr=-2.9,-.22&ss=$visual_rp",
+                                        javascriptMode:
+                                            JavascriptMode.unrestricted,
+                                        gestureNavigationEnabled: true,
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    width: 200,
+                    height: 400,
+                    child: Column(
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          height: 20.0,
+                          child: const Center(
+                            child: Text(
+                              'All Search Image',
+                              style: TextStyle(fontSize: 15.0),
+                            ),
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border.all(
+                                color: Colors.green, width: 1.0),
+                          ),
+                        ),
+                        Expanded(
+                          child: _AllSearchImage == null
+                              ? const Center(child: Text("Empty"))
+                              : GestureDetector(
+                                  child: Image.memory(_AllSearchImage!,
+                                      height: 248),
+                                  onTap: () async {
+                                    await showDialog(
+                                        context: context,
+                                        builder: (_) =>
+                                            ImageDialog(visual_rp: visual_rp));
+                                  },
+                                  onDoubleTap: () async {
+                                    await showDialog(
+                                      context: context,
+                                      builder: (_) => WebView(
+                                        initialUrl:
+                                            "https://my.matterport.com/show/?m=evfzqBJihod&sr=-2.9,-.22&ss=$visual_rp",
+                                        javascriptMode:
+                                            JavascriptMode.unrestricted,
+                                        gestureNavigationEnabled: true,
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    ),
+                  )
                 ],
               ),
-              height: 270,
             ),
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 10.0),
               child: GestureDetector(
                 child: Center(
                   child: rssi_rp_prob.isNotEmpty
-                      ? Text(
-                    'Image RP : ${rssi_rp[0]}\nProbability : ${rssi_rp_prob[0].toStringAsFixed(4)}%',
-                    style: const TextStyle(fontSize: 20.0),
-                    textAlign: TextAlign.center,
-                  )
-                      : const Text(
-                    'Image RP :\nProbability : ',
-                    style: TextStyle(fontSize: 20.0),
-                    textAlign: TextAlign.center,
-                  ),
+                      ? Column(
+                          children: [
+                            const Text("1st location estimate result",
+                                style: TextStyle(fontSize: 14.0)),
+                            Text(
+                              'Building : $building, Floor : $floor\nRegion : $region, RP : $rssi_rp\nProbability : ${rssi_rp_prob[0].toStringAsFixed(4)}%',
+                              style: const TextStyle(fontSize: 20.0),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            const Text("1st location estimate result",
+                                style: TextStyle(fontSize: 14.0)),
+                            const Text(
+                              'Building : , Floor : , Region : \nProbability : ',
+                              style: TextStyle(fontSize: 20.0),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
                 ),
                 onTap: () async {
                   await showDialog(
@@ -399,49 +513,87 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border.all(color: Colors.green, width: 1.0),
+                border: Border.all(color: Colors.deepOrange, width: 2.0),
                 borderRadius: BorderRadius.circular(5.0),
               ),
-              height: 70,
             ),
             const SizedBox(height: 10.0),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10.0),
-              child: Column(
-                children: [
-                  const Text("Maximum Candidate RSSI RP"),
-                  Center(
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton(
-                        isExpanded: true,
-                        value: _selectedRssiCandidateMaxRP,
-                        items: _rssiCandidateMaxRPList.map((value) {
-                          return DropdownMenuItem(
-                              value: value,
-                              child:
-                              Center(child: Text(value.toString())));
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedRssiCandidateMaxRP =
-                                int.parse(value.toString());
-                          });
-                        },
-                      ),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 10.0),
+                    child: Column(
+                      children: [
+                        const Text("RSSI model"),
+                        Center(
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton(
+                              isExpanded: true,
+                              value: _selectedRssiModel,
+                              items: _rssiModelList.map((value) {
+                                return DropdownMenuItem(
+                                    value: value,
+                                    child: Center(child: Text(value.toString())));
+                              }).toList(),
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedRssiModel = value.toString();
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Colors.deepOrange, width: 2.0),
+                      borderRadius: BorderRadius.circular(5.0),
+                    ),
+                    height: 70,
                   ),
-                ],
-              ),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: Colors.green, width: 1.0),
-                borderRadius: BorderRadius.circular(5.0),
-              ),
-              height: 70,
+                ),
+                Expanded(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 10.0),
+                    child: Column(
+                      children: [
+                        const Text("Maximum Candidate"),
+                        Center(
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton(
+                              isExpanded: true,
+                              value: _selectedRssiCandidateMaxRP,
+                              items: _rssiCandidateMaxRPList.map((value) {
+                                return DropdownMenuItem(
+                                    value: value,
+                                    child: Center(child: Text(value.toString())));
+                              }).toList(),
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedRssiCandidateMaxRP =
+                                      int.parse(value.toString());
+                                });
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Colors.deepOrange, width: 2.0),
+                      borderRadius: BorderRadius.circular(5.0),
+                    ),
+                    height: 70,
+                  ),
+                ),
+              ],
             ),
             Container(
               margin:
-              const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
+                  const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10.0),
               width: double.infinity,
               height: 60.0,
               child: ElevatedButton(
@@ -450,27 +602,76 @@ class _MyHomePageState extends State<MyHomePage> {
                 },
                 child: const Text("1st location estimate(RSSI Search)"),
                 style: ButtonStyle(
-                  backgroundColor: MaterialStateProperty.all(Colors.green),
+                  backgroundColor: MaterialStateProperty.all(Colors.deepOrange),
                   padding: MaterialStateProperty.all(
                     const EdgeInsets.all(10.0),
                   ),
                 ),
               ),
             ),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10.0),
+            SizedBox(
               width: double.infinity,
-              height: 120.0,
-              child: Center(
-                child: Text(
-                  'Distance similarity : $dist\nSearch Time : ${_searchTime.toStringAsFixed(4)}s\nAll Search Time: ${_allSearchTime.toStringAsFixed(4)}s\n개선율 : ${_searchTime == 0 && _allSearchTime == 0 ? 0: performanceCalculator(_searchTime, _allSearchTime)}%',
-                  style: const TextStyle(fontSize: 20.0),
-                  textAlign: TextAlign.center,
-                ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 3.0),
+                    child: Center(
+                      child: Column(
+                        children: [
+                          const Text('Fi-Vi search result', style: TextStyle(fontSize: 14.0),),
+                          Text(
+                            'Similarity : $dist\nSearch Time : ${_searchTime.toStringAsFixed(2)}s',
+                            style: const TextStyle(fontSize: 17.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ],
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Colors.blue.shade300, width: 2.0),
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 3.0),
+                    child: Center(
+                      child: Column(
+                        children: [
+                          const Text('All search result', style: TextStyle(fontSize: 14.0),),
+                          Text(
+                            'Similarity : $_allSearchDist\nAll Search Time: ${_allSearchTime.toStringAsFixed(2)}s',
+                            style: const TextStyle(fontSize: 17.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ],
+                      ),
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: Colors.blue.shade300, width: 2.0),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 2),
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 12.5),
+              child: Column(
+                children: [
+                  Text(
+                    '개선율 : ${_searchTime == 0 && _allSearchTime == 0 ? 0 : performanceCalculator(_searchTime, _allSearchTime).toStringAsFixed(4)}%\n필터링 된 이미지 : ${(_filteredImageLength/totalImageLength*100).toStringAsFixed(4)}%($_filteredImageLength/$totalImageLength)',
+                    style: const TextStyle(fontSize: 17.0),
+                    textAlign: TextAlign.left,
+                  ),
+                ],
               ),
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border.all(color: Colors.blue.shade300, width: 3.0),
+                border: Border.all(color: Colors.blue.shade300, width: 2.0),
               ),
             ),
             const SizedBox(height: 10),
@@ -483,8 +684,7 @@ class _MyHomePageState extends State<MyHomePage> {
                     value: _selectedImageSearchAlgo,
                     items: _imageSearchAlgoList.map((value) {
                       return DropdownMenuItem(
-                          value: value,
-                          child: Center(child: Text(value)));
+                          value: value, child: Center(child: Text(value)));
                     }).toList(),
                     onChanged: (value) {
                       setState(() {
@@ -496,7 +696,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ),
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border.all(color: Colors.green, width: 1.0),
+                border: Border.all(color: Colors.blue.shade300, width: 2.0),
                 borderRadius: BorderRadius.circular(5.0),
               ),
               height: 30,
@@ -512,7 +712,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 },
                 child: const Text("2nd location estimate(Image Search)"),
                 style: ButtonStyle(
-                  backgroundColor: MaterialStateProperty.all(Colors.green),
+                  backgroundColor: MaterialStateProperty.all(Colors.blue.shade300),
                   padding: MaterialStateProperty.all(
                     const EdgeInsets.all(10.0),
                   ),
